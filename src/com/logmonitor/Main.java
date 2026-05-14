@@ -2,28 +2,58 @@ package com.logmonitor;
 
 import com.logmonitor.dao.LogDAO;
 import com.logmonitor.model.LogEntry;
+import com.logmonitor.server.HttpApiServer;
+import com.logmonitor.service.LogService;
+import com.logmonitor.service.LogStatistics;
+import com.logmonitor.ui.LogMonitorFrame;
+import com.logmonitor.util.DatabaseConnection;
+
+import java.io.IOException;
+import java.awt.GraphicsEnvironment;
 import java.sql.SQLException;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Scanner;
 
 public class Main {
     private static final LogDAO logDAO = new LogDAO();
-    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final LogService logService = new LogService(logDAO);
 
     public static void main(String[] args) {
-        System.out.println("=== Server Log Monitor ===");
-        System.out.println("Connected to PostgreSQL Database");
-        
-        if (args.length > 0 && args[0].equals("--demo")) {
-            insertDemoLogs();
-            return;
-        }
+        try {
+            DatabaseConnection.getInstance();
+            System.out.println("=== Server Log Monitor ===");
 
+            if (containsArg(args, "--demo")) {
+                insertDemoLogs();
+                return;
+            }
+
+            if (containsArg(args, "--cli")) {
+                runCli();
+                return;
+            }
+
+            if (shouldRunHttpServer(args)) {
+                startHttpServer();
+                return;
+            }
+
+            if (!GraphicsEnvironment.isHeadless()) {
+                startDesktopApp();
+                return;
+            }
+
+            runCli();
+        } catch (IllegalStateException e) {
+            System.err.println("Application startup failed: " + e.getMessage());
+            System.exit(1);
+        }
+    }
+
+    private static void runCli() {
+        System.out.println("Connected to PostgreSQL database");
         Scanner scanner = new Scanner(System.in);
         boolean running = true;
-
         while (running) {
             printMenu();
             String choice = scanner.nextLine().trim();
@@ -62,6 +92,53 @@ public class Main {
         scanner.close();
     }
 
+    private static boolean containsArg(String[] args, String flag) {
+        for (String arg : args) {
+            if (flag.equalsIgnoreCase(arg)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean shouldRunHttpServer(String[] args) {
+        return containsArg(args, "--server") || hasEnvValue("PORT");
+    }
+
+    private static boolean hasEnvValue(String name) {
+        String value = System.getenv(name);
+        return value != null && !value.isBlank();
+    }
+
+    private static void startHttpServer() {
+        int port = resolvePort();
+        try {
+            HttpApiServer server = new HttpApiServer(port);
+            server.start();
+            System.out.println("HTTP server running on port " + port);
+            System.out.println("Health check: /health");
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to start HTTP server on port " + port, e);
+        }
+    }
+
+    private static void startDesktopApp() {
+        LogMonitorFrame.launch(logService);
+    }
+
+    private static int resolvePort() {
+        String portValue = System.getenv("PORT");
+        if (portValue == null || portValue.isBlank()) {
+            return 8080;
+        }
+
+        try {
+            return Integer.parseInt(portValue);
+        } catch (NumberFormatException e) {
+            throw new IllegalStateException("Invalid PORT value: " + portValue, e);
+        }
+    }
+
     private static void printMenu() {
         System.out.println("\n--- Menu ---");
         System.out.println("1. View All Logs");
@@ -75,7 +152,7 @@ public class Main {
     }
 
     private static void viewAllLogs() throws SQLException {
-        List<LogEntry> logs = logDAO.getAllLogs();
+        List<LogEntry> logs = logService.getAllLogs();
         if (logs.isEmpty()) {
             System.out.println("No logs found.");
         } else {
@@ -89,7 +166,7 @@ public class Main {
     private static void filterByLevel(Scanner scanner) throws SQLException {
         System.out.print("Enter log level (ERROR, WARNING, INFO): ");
         String level = scanner.nextLine().trim().toUpperCase();
-        List<LogEntry> logs = logDAO.getLogsByLevel(level);
+        List<LogEntry> logs = logService.getLogs(level, null, null);
         if (logs.isEmpty()) {
             System.out.println("No logs found with level: " + level);
         } else {
@@ -103,7 +180,7 @@ public class Main {
     private static void searchLogs(Scanner scanner) throws SQLException {
         System.out.print("Enter search keyword: ");
         String keyword = scanner.nextLine().trim();
-        List<LogEntry> logs = logDAO.searchLogs(keyword);
+        List<LogEntry> logs = logService.getLogs(null, null, keyword);
         if (logs.isEmpty()) {
             System.out.println("No logs found matching: " + keyword);
         } else {
@@ -117,7 +194,7 @@ public class Main {
     private static void filterBySource(Scanner scanner) throws SQLException {
         System.out.print("Enter source: ");
         String source = scanner.nextLine().trim();
-        List<LogEntry> logs = logDAO.getLogsBySource(source);
+        List<LogEntry> logs = logService.getLogs(null, source, null);
         if (logs.isEmpty()) {
             System.out.println("No logs found from source: " + source);
         } else {
@@ -129,12 +206,11 @@ public class Main {
     }
 
     private static void viewStatistics() throws SQLException {
-        long totalLogs = logDAO.getLogCount();
-        long errorCount = logDAO.getErrorCount();
+        LogStatistics statistics = logService.getStatistics();
         System.out.println("\n--- Statistics ---");
-        System.out.println("Total logs: " + totalLogs);
-        System.out.println("Error logs: " + errorCount);
-        System.out.println("Success rate: " + ((totalLogs - errorCount) * 100.0 / (totalLogs > 0 ? totalLogs : 1)) + "%");
+        System.out.println("Total logs: " + statistics.getTotalLogs());
+        System.out.println("Error logs: " + statistics.getErrorLogs());
+        System.out.println("Success rate: " + statistics.getSuccessRate() + "%");
     }
 
     private static void addLog(Scanner scanner) throws SQLException {
@@ -144,29 +220,15 @@ public class Main {
         String level = scanner.nextLine().trim().toUpperCase();
         System.out.print("Enter source: ");
         String source = scanner.nextLine().trim();
-        
-        String timestamp = LocalDateTime.now().format(FORMATTER);
-        LogEntry log = new LogEntry(timestamp, level, message, source);
-        logDAO.insertLog(log);
+
+        logService.addLog(level, message, source);
         System.out.println("Log added successfully!");
     }
 
     private static void insertDemoLogs() {
-        String[][] demoData = {
-                {"2024-05-14 10:15:32", "INFO", "Service started on port 8080", "APIGateway"},
-                {"2024-05-14 10:20:45", "WARNING", "Memory usage at 78%", "DatabaseService"},
-                {"2024-05-14 10:25:12", "ERROR", "NullPointerException in UserController", "AuthService"},
-                {"2024-05-14 10:30:22", "INFO", "User login successful", "AuthService"},
-                {"2024-05-14 10:35:50", "WARNING", "Slow query detected (2300ms)", "DatabaseService"},
-                {"2024-05-14 10:40:15", "ERROR", "Database connection pool exhausted", "DatabaseService"}
-        };
-
         try {
-            for (String[] data : demoData) {
-                LogEntry log = new LogEntry(data[0], data[1], data[2], data[3]);
-                logDAO.insertLog(log);
-            }
-            System.out.println("Demo logs inserted successfully!");
+            int inserted = logService.seedDemoLogs();
+            System.out.println("Demo logs inserted successfully! Inserted " + inserted + " records.");
         } catch (SQLException e) {
             System.err.println("Failed to insert demo logs: " + e.getMessage());
         }

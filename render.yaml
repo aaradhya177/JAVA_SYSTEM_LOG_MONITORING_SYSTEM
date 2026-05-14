@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: logmonitor
+    env: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DB_USER
+        value: postgres
+      - key: DB_PASSWORD
+        sync: false

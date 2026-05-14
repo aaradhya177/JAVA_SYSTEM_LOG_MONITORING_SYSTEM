@@ -104,6 +104,19 @@ public class LogDAO {
         return logs;
     }
 
+    public List<String> getDistinctSources() throws SQLException {
+        String sql = "SELECT DISTINCT source FROM logs ORDER BY source ASC";
+        List<String> sources = new ArrayList<>();
+        try (Connection conn = DatabaseConnection.getInstance().getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                sources.add(rs.getString("source"));
+            }
+        }
+        return sources;
+    }
+
     public void deleteLog(int id) throws SQLException {
         String sql = "DELETE FROM logs WHERE id = ?";
         try (Connection conn = DatabaseConnection.getInstance().getConnection();
