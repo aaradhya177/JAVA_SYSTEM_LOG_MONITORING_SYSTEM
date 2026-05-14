@@ -1,27 +1,38 @@
+# Build stage - compile Java code
+FROM eclipse-temurin:11-jdk-alpine as builder
+
+WORKDIR /build
+
+# Install wget
+RUN apk add --no-cache wget
+
+# Create directories
+RUN mkdir -p /build/lib /build/bin
+
+# Copy source files
+COPY src/ /build/src/
+
+# Download PostgreSQL JDBC driver
+RUN wget -q -O /build/lib/postgresql-42.7.1.jar \
+    https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.1/postgresql-42.7.1.jar
+
+# Compile Java sources
+RUN javac -d /build/bin -cp "/build/lib/*" \
+    /build/src/com/logmonitor/model/*.java \
+    /build/src/com/logmonitor/util/*.java \
+    /build/src/com/logmonitor/dao/*.java \
+    /build/src/com/logmonitor/*.java
+
+# Runtime stage - minimal image with only JRE
 FROM eclipse-temurin:11-jre-alpine
 
 WORKDIR /app
 
-# Install wget for downloading dependencies
-RUN apk add --no-cache wget
+# Copy compiled classes from builder
+COPY --from=builder /build/bin /app/bin/
 
-# Create necessary directories
-RUN mkdir -p /app/lib /app/bin /app/src
-
-# Copy source files
-COPY src/ /app/src/
-COPY db/ /app/db/
-
-# Download PostgreSQL JDBC driver
-RUN wget -q -O /app/lib/postgresql-42.7.1.jar \
-    https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.1/postgresql-42.7.1.jar
-
-# Compile Java sources
-RUN javac -d /app/bin -cp "/app/lib/*" \
-    /app/src/com/logmonitor/model/*.java \
-    /app/src/com/logmonitor/util/*.java \
-    /app/src/com/logmonitor/dao/*.java \
-    /app/src/com/logmonitor/*.java
+# Copy dependencies from builder
+COPY --from=builder /build/lib /app/lib/
 
 # Run the application
 CMD ["java", "-cp", "/app/bin:/app/lib/*", "com.logmonitor.Main"]
